@@ -1,0 +1,293 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+import pandas as pd 
+import nltk
+import re
+import numpy
+import random
+import math
+nltk.download('stopwords')
+from nltk.corpus import stopwords
+from sklearn.preprocessing import LabelEncoder
+from tqdm.notebook import tqdm
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.layers import Dense, LSTM, Input, GlobalMaxPooling1D, Bidirectional, Conv1D
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import *
+from bokeh.io import show, output_file, output_notebook
+from bokeh.plotting import figure
+from bokeh.layouts import gridplot
+from bokeh.models import ColumnDataSource, Circle, HoverTool
+from bokeh.transform import transform, linear_cmap
+
+get_ipython().system(' pip install transformers')
+
+round = tf.keras.backend.round
+def metrics(y_true,y_pred, print_output=True):
+
+  cm = confusion_matrix(y_true=y_true, y_pred=y_pred)
+
+  ac = accuracy_score(y_true=y_true, y_pred=y_pred) # accuracy: (tp + tn) / (p + n)
+
+
+  pc = precision_score(y_true=y_true, y_pred=y_pred) # precision tp / (tp + fp)
+
+  rc = recall_score(y_pred, y_true)  # recall: tp / (tp + fn)
+
+  f1 = f1_score(y_pred, y_true)
+
+  auc = roc_auc_score(y_pred, y_true)
+
+  ck = cohen_kappa_score(y1=y_true, y2=y_pred) #symetric order doesn't matter
+
+  if print_output:
+    print("Confusion matrix:\n",cm)
+    print("Accuracy score for the model is: ", ac) 
+    print("Precision score for the model is: ", pc)
+    print('Recall score for the model is: ', rc)
+    print('F1 score score for the model is: ', f1)
+    print('ROC AUC score for the model is: ', auc)
+    print("Cohen's Kappa score for the model is: ",ck)
+
+  return (cm,ac,pc,rc,f1,auc,ck)
+
+
+import transformers as trns
+
+dff = pd.read_csv('./news-2_allCol.csv')
+dff.info()
+dff['label'].describe()
+
+STOPWORDS = set(stopwords.words('english'))-set(["no","not"])
+
+def preprocess_text(sen):
+    # Removing html tags
+    sentence = remove_tags(sen)
+
+    # Remove punctuations
+    sentence = re.sub('[^a-zA-Z]', ' ', sentence)
+
+    # Single character removal
+    sentence = re.sub(r"\s+[a-zA-Z]\s+", ' ', sentence)
+
+    # Removing multiple spaces
+    sentence = re.sub(r'\s+', ' ', sentence)
+
+    # Removing stopwords
+    #sentence = ' '.join(word for word in sentence.split() if word not in STOPWORDS) 
+    
+    return sentence
+
+TAG_RE = re.compile(r'<[^>]+>')
+
+def remove_tags(text):
+    return TAG_RE.sub('', text)    
+
+reviews = []
+sentences = list(dff['Title_Text_Stance'])
+#sentences = dff['Title_Text_Stance'].values
+for sen in sentences:
+    reviews.append(preprocess_text(sen))
+
+y = dff['label'].values
+le = LabelEncoder()
+num_classes=2 # positive -> 1, negative -> 0
+y = le.fit_transform(y)
+print(y.shape)
+y
+
+train_text, temp_text, train_labels, temp_labels = train_test_split(reviews, y, 
+                                                                    random_state=2018, 
+                                                                    test_size=0.3, 
+                                                                    stratify=y)
+
+# we will use temp_text and temp_labels to create validation and test set
+val_text, test_text, val_labels, test_labels = train_test_split(temp_text, temp_labels, 
+                                                                random_state=2018, 
+                                                                test_size=0.5, 
+                                                                stratify=temp_labels)
+
+
+bert_path = "distilbert-base-uncased"
+max_length = 512
+encoder = trns.DistilBertTokenizer.from_pretrained(bert_path)
+
+train_input_id = []
+train_mask_id = []
+for i in tqdm(train_text):
+  e = encoder.encode_plus( i, max_length=max_length,truncation=True , add_special_tokens=True, pad_to_max_length=True)
+  inp = e["input_ids"]
+  mask = e["attention_mask"]
+  train_input_id.append(inp)
+  train_mask_id.append(mask)
+
+test_input_id = []
+test_mask_id = []
+for i in tqdm(test_text):
+  e = encoder.encode_plus( i, max_length=max_length,truncation=True , add_special_tokens=True, pad_to_max_length=True)
+  inp = e["input_ids"]
+  mask = e["attention_mask"]
+  test_input_id.append(inp)
+  test_mask_id.append(mask)
+
+val_input_id = []
+val_mask_id = []
+for i in tqdm(val_text):
+  e = encoder.encode_plus( i, max_length=max_length,truncation=True , add_special_tokens=True, pad_to_max_length=True)
+  inp = e["input_ids"]
+  mask = e["attention_mask"]
+  val_input_id.append(inp)
+  val_mask_id.append(mask)
+
+
+train_input = tf.cast(train_input_id, tf.int32)
+train_mask = tf.cast(train_mask_id, tf.int32)
+test_input = tf.cast(test_input_id, tf.int32)
+test_mask = tf.cast(test_mask_id, tf.int32)
+val_input = tf.cast(val_input_id, tf.int32)
+val_mask = tf.cast(val_mask_id, tf.int32)
+
+
+token_inputs = Input((None,), dtype=tf.int32, name='input_word_ids')
+mask_inputs = Input((None,), dtype=tf.int32, name='input_masks')
+
+bert_model = trns.TFDistilBertModel.from_pretrained(bert_path)
+bert_model.trainable=False
+seq_output = bert_model([token_inputs, mask_inputs])[0][:,0,:]
+
+
+X = Dense(100, activation='relu')(seq_output)
+output_= Dense(1, activation='sigmoid', name='output')(X)
+
+bert_model2 = Model([token_inputs, mask_inputs],output_)
+bert_model2.summary()
+
+bert_model2.compile(loss="binary_crossentropy",optimizer="adam", metrics=["acc"])
+
+with tf.device("/GPU:0"):
+  history_model1 = bert_model2.fit(x = [train_input,train_mask],y=train_labels,
+                                   epochs=10, validation_data=([val_input,val_mask],val_labels))
+
+y_pred1 = round(bert_model2.predict([test_input,test_mask]))
+(cm1,ac1,pc1,rc1,f1_1,auc1,ck1) = metrics(test_labels, y_pred1)
+
+## Plot confusion matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+fig, ax = plt.subplots()
+sns.heatmap(cm, annot=True, fmt='d', ax=ax, cmap=plt.cm.Blues, 
+            cbar=False)
+ax.set(xlabel="Pred", ylabel="True", xticklabels=classes, 
+       yticklabels=classes, title="Confusion matrix")
+plt.yticks(rotation=0)
+
+fig, ax = plt.subplots(nrows=1, ncols=2)
+## Plot roc
+for i in range(len(classes)):
+    fpr, tpr, thresholds = metrics.roc_curve(y_test_array[:,i],  
+                           predicted_prob[:,i])
+    ax[0].plot(fpr, tpr, lw=3, 
+              label='{0} (area={1:0.2f})'.format(classes[i], 
+                              metrics.auc(fpr, tpr))
+               )
+ax[0].plot([0,1], [0,1], color='navy', lw=3, linestyle='--')
+ax[0].set(xlim=[-0.05,1.0], ylim=[0.0,1.05], 
+          xlabel='False Positive Rate', 
+          ylabel="True Positive Rate (Recall)", 
+          title="Receiver operating characteristic")
+ax[0].legend(loc="lower right")
+ax[0].grid(True)
+'''    
+## Plot precision-recall curve
+for i in range(len(classes)):
+    precision, recall, thresholds = metrics.precision_recall_curve(
+                 y_test_array[:,i], predicted_prob[:,i])
+    ax[1].plot(recall, precision, lw=3, 
+               label='{0} (area={1:0.2f})'.format(classes[i], 
+                                  metrics.auc(recall, precision))
+              )
+ax[1].set(xlim=[0.0,1.05], ylim=[0.0,1.05], xlabel='Recall', 
+          ylabel="Precision", title="Precision-Recall curve")
+ax[1].legend(loc="best")
+ax[1].grid(True)
+plt.show()
+'''
+
+# LSTM Model
+
+token_inputs = Input((None,), dtype=tf.int32, name='input_word_ids')
+mask_inputs = Input((None,), dtype=tf.int32, name='input_masks')
+
+bert_model = trns.TFDistilBertModel.from_pretrained(bert_path)
+bert_model.trainable=False
+seq_output = bert_model([token_inputs, mask_inputs])[0]
+
+X = LSTM(64)(seq_output)
+X = Dense(32)(X)
+output_= Dense(1, activation='sigmoid', name='output')(X)
+
+bert_model3 = Model([token_inputs, mask_inputs],output_)
+bert_model3.summary()
+
+bert_model3.compile(loss="binary_crossentropy",optimizer="adam", metrics=["acc"])
+
+with tf.device("/GPU:0"):
+  history_model2 = bert_model3.fit(x = [train_input,train_mask],y=train_labels,
+                                   epochs=10, validation_data=([val_input,val_mask],val_labels))
+
+y_pred2 = round(bert_model3.predict([test_input,test_mask]))
+(cm2,ac2,pc2,rc2,f1_2,auc2,ck2) = metrics(test_labels, y_pred2)
+
+# Bi-LSTM Model
+
+token_inputs = Input((None,), dtype=tf.int32, name='input_word_ids')
+mask_inputs = Input((None,), dtype=tf.int32, name='input_masks')
+
+bert_model = trns.TFDistilBertModel.from_pretrained(bert_path)
+bert_model.trainable=False
+seq_output = bert_model([token_inputs, mask_inputs])[0]
+
+X = Bidirectional(LSTM(64))(seq_output)
+X = Dense(32)(X)
+output_= Dense(1, activation='sigmoid', name='output')(X)
+
+bert_model4 = Model([token_inputs, mask_inputs],output_)
+bert_model4.summary()
+
+bert_model4.compile(loss="binary_crossentropy",optimizer="adam", metrics=["acc"])
+
+with tf.device("/GPU:0"):
+  history_model2 = bert_model4.fit(x = [train_input,train_mask],y=train_labels,
+                                   epochs=10, validation_data=([val_input,val_mask],val_labels))
+
+y_pred3 = round(bert_model4.predict([test_input,test_mask]))
+(cm3,ac3,pc3,rc3,f1_3,auc3,ck3) = metrics(test_labels, y_pred3)
+
+# CNN Model
+
+token_inputs = Input((None,), dtype=tf.int32, name='input_word_ids')
+mask_inputs = Input((None,), dtype=tf.int32, name='input_masks')
+
+bert_model = trns.TFDistilBertModel.from_pretrained(bert_path)
+bert_model.trainable=False
+seq_output = bert_model([token_inputs, mask_inputs])[0]
+
+X = Conv1D(128, 5, activation='relu')(seq_output)
+X = GlobalMaxPooling1D()(X)
+X = Dense(32)(X)
+output_= Dense(1, activation='sigmoid', name='output')(X)
+
+bert_model5 = Model([token_inputs, mask_inputs],output_)
+bert_model5.summary()
+
+bert_model5.compile(loss="binary_crossentropy",optimizer="adam", metrics=["acc"])
+
+with tf.device("/GPU:0"):
+  history_model4 = bert_model5.fit(x = [train_input,train_mask],y=train_labels,
+                                   epochs=10, validation_data=([val_input,val_mask],val_labels))
+
+y_pred4 = round(bert_model5.predict([test_input,test_mask]))
+(cm3,ac3,pc3,rc3,f1_3,auc3,ck3) = metrics(test_labels, y_pred4)
