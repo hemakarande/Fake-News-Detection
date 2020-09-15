@@ -1,0 +1,106 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+get_ipython().system('pip install bs4')
+
+import numpy as np # linear algebra
+import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv) 
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import normalize
+from sklearn.metrics import pairwise_distances 
+from sklearn.metrics.pairwise import cosine_similarity
+
+from bs4 import BeautifulSoup
+
+import nltk
+nltk.download('punkt')
+nltk.download('stopwords')
+import string
+from nltk.corpus import stopwords 
+from nltk.tokenize import word_tokenize 
+
+import matplotlib.pyplot as plt
+get_ipython().run_line_magic('matplotlib', 'inline')
+plt.style.use('fivethirtyeight')
+
+# email module has some useful functions
+import os, sys, email,re
+
+similarity_array = []
+df = pd.read_csv('./news-2.csv')
+df.info()
+
+print(df.shape)
+len(df['text'])
+
+stopwords = nltk.corpus.stopwords.words('english')
+CustomListofWordstoExclude = ["'s",'say','says','said','s',"n't"] 
+stopwords.extend(CustomListofWordstoExclude)
+
+aa = 0
+i=0
+for i in range(len(df['text'])):
+    aa+=1
+    data_text = df['text'].values[i]
+    data_title = df['title'].values[i]
+    X_list = word_tokenize(str(data_title))  
+    Y_list = word_tokenize(str(data_text))
+    #print(X_list.size)
+    sw = stopwords
+    l1 =[];l2 =[]
+    X_set = {w for w in X_list if not w in sw}  
+    Y_set = {w for w in Y_list if not w in sw} 
+    #print(len(X_set))
+    #print("############")
+    #print(len(Y_set))
+    rvector = X_set.union(Y_set)  
+    
+    #print("rvector size")
+    #print(len(rvector))
+    for w in rvector: 
+        if w in X_set: l1.append(1) # create a vector 
+        else: l1.append(0) 
+        if w in Y_set: l2.append(1) 
+        else: l2.append(0) 
+    c = 0
+
+    # cosine formula  
+    for i in range(len(rvector)): 
+        c+= l1[i]*l2[i]
+    try:
+        cosine = c/float((sum(l1)*sum(l2))**0.5) 
+    except ZeroDivisionError:
+        cosine = 0
+    #print("similarity: ", cosine)
+    similarity_array.append(cosine)
+    #df['similarity'].values[i]=cosine
+    
+print("value of aa:")
+print(aa)
+
+similarity_array.insert(0,"stance")
+
+len(similarity_array)
+
+import csv
+with open(r'./news-2.csv', 'r') as in_csv, open(r'./news-22.csv', 'w') as out_csv:
+    reader = csv.reader(in_csv)
+    writer = csv.writer(out_csv)
+    for row, new_col in zip(reader, similarity_array):
+        row.append(new_col)
+        writer.writerow(row)
+
+dff = pd.read_csv('./news-22.csv')
+dff.head()
+
+result = [] 
+for value in dff["stance"]: 
+    if value >= 0.06: 
+        result.append("match") 
+    else: 
+        result.append("nomatch") 
+       
+dff["Result"] = result
+dff.head()
+
